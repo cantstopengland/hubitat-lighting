@@ -24,6 +24,7 @@ header h1{font-size:17px;font-weight:600;margin:0}
 #status{color:var(--tx2);font-size:13px}
 #status.err{color:var(--dan)}
 header .sp{flex:1}
+#q{width:200px;max-width:40vw}
 #banner{display:none;margin:8px 16px 0;padding:8px 12px;border-radius:8px;background:var(--warn-bg);color:var(--warn)}
 #banner.on{display:flex;gap:12px;align-items:center}
 .legend{display:flex;gap:14px;align-items:center;flex-wrap:wrap;color:var(--tx2);font-size:12px;padding:8px 16px 0}
@@ -130,6 +131,7 @@ body.ed-open aside#ed{transform:none}
   <h1>Lighting timeline</h1>
   <span id="status">Loading…</span>
   <span class="sp"></span>
+  <input type="search" id="q" placeholder="Filter lights  ( / )" aria-label="Filter lights by name or room" autocomplete="off">
   <button id="undoBtn" disabled title="Undo (Ctrl+Z)">Undo</button>
   <button id="reloadBtn" title="Reload from the hub">Reload</button>
   <a id="exportLink" target="_blank" rel="noopener" style="font-size:13px;color:var(--acc)">Export JSON</a>
@@ -188,7 +190,7 @@ let SUN = {sr: 390, ss: 1020};
 let clockOff = 0, lastFired = null;
 let DS = 240, TODAY = null;  // the schedule day starts at 4 AM; TODAY = id of the schedule in charge today
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-const ui = {ed: null, menu: false, drag: null, closed: loadClosed(), sched: null};
+const ui = {ed: null, menu: false, drag: null, closed: loadClosed(), sched: null, q: ''};
 // The schedule being viewed and edited.
 const C = () => TL.schedules.find(x => x.id === ui.sched) || TL.schedules[0];
 let undoStack = [], undoKey = null;
@@ -423,10 +425,17 @@ function render() {
     h += '<th class="' + cls.join(' ') + '" data-s="' + s.id + '" tabindex="0" title="' + esc(title) + '"><div class="tg">' + (s.id === curId ? 'now ' : '') + esc(tagShort(s)) + '</div><div class="tm">' + fmtS(T(s)) + '</div><div class="lb">' + esc(s.label || '—') + '</div></th>';
   });
   h += '</tr></thead><tbody>';
-  rooms().forEach(([rn, ls]) => {
-    const open = !ui.closed.has(rn);
+  const words = ui.q.toLowerCase().split(/\s+/).filter(Boolean);
+  const hit = l => words.every(w => (l.name + ' ' + (l.room || '')).toLowerCase().includes(w));
+  let shown = 0;
+  rooms().forEach(([rn, all]) => {
+    // While filtering, only matching lights show, and their rooms are open regardless of collapsed state.
+    const ls = words.length ? all.filter(hit) : all;
+    if (!ls.length) return;
+    shown += ls.length;
+    const open = words.length > 0 || !ui.closed.has(rn);
     const unused = ls.filter(l => !C().slots.some(s => s.rules[l.id])).length;
-    h += '<tr class="room" data-r="' + esc(rn) + '"><td class="n">' + (open ? '▾ ' : '▸ ') + esc(rn) + '<span class="cnt">' + ls.length + (unused ? ' · ' + unused + ' unscheduled' : '') + '</span></td><td colspan="' + ss.length + '"></td></tr>';
+    h += '<tr class="room" data-r="' + esc(rn) + '"><td class="n">' + (open ? '▾ ' : '▸ ') + esc(rn) + '<span class="cnt">' + (words.length ? ls.length + ' of ' + all.length : ls.length) + (unused ? ' · ' + unused + ' unscheduled' : '') + '</span></td><td colspan="' + ss.length + '"></td></tr>';
     if (!open) return;
     ls.forEach(l => {
       h += '<tr><td class="n"><div class="nrow"><span title="' + esc(liveText(l)) + '">' + chip(l) + '</span><span class="nm" title="' + esc(l.name) + '">' + esc(shortName(l)) + '</span>'
@@ -435,6 +444,7 @@ function render() {
       h += rowCells(l, ss, sel) + '</tr>';
     });
   });
+  if (LIGHTS.length && words.length && !shown) h += '<tr><td class="n" style="white-space:normal;height:auto;padding:12px">No lights match “' + esc(ui.q) + '”.</td></tr>';
   if (!LIGHTS.length) h += '<tr><td class="n" style="white-space:normal;height:auto;padding:12px">No lights selected yet. Pick them in the app\'s settings page in Hubitat.</td></tr>';
   h += '</tbody>';
   $('m').innerHTML = h;
@@ -901,6 +911,7 @@ tbl.addEventListener('click', ev => {
     if (act === 'newLight') return newSlot('light', a.dataset.l);
   }
   const room = t.closest('tr.room');
+  if (room && ui.q) return;  // rooms stay open while filtering
   if (room) { const r = room.dataset.r; ui.closed.has(r) ? ui.closed.delete(r) : ui.closed.add(r); storeClosed(); return render(); }
   const td = t.closest('td.c');
   if (td) openEditor({type: 'cell', sid: td.dataset.s, lid: td.dataset.l});
@@ -928,8 +939,13 @@ $('ed').addEventListener('mouseup', ev => { if (ev.target === justSelected) { ev
 $('ed').addEventListener('keydown', () => { justSelected = null; });
 $('undoBtn').addEventListener('click', undo);
 $('reloadBtn').addEventListener('click', async () => { if ((dirty || saving) && !conflict) await flush(); load(); });
+$('q').addEventListener('input', ev => { ui.q = ev.target.value.trim(); render(); });
+$('q').addEventListener('keydown', ev => {
+  if (ev.key === 'Escape') { ev.stopPropagation(); ev.target.value = ''; ui.q = ''; render(); ev.target.blur(); }
+});
 document.addEventListener('keydown', ev => {
   const typing = /^(INPUT|SELECT|TEXTAREA)$/.test(ev.target.tagName);
+  if (ev.key === '/' && !typing && !ev.ctrlKey && !ev.metaKey) { ev.preventDefault(); $('q').focus(); $('q').select(); }
   if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'z' && !typing) { ev.preventDefault(); undo(); }
   if (ev.key === 'Escape' && ui.ed) closeEditor();
 });
