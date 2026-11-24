@@ -19,6 +19,7 @@
  *                     catch-up after hub restarts, pending levels for lights that can't pre-stage
  * Updated 2026-11-24: Schedules - several timelines, each used on chosen days of the week.
  *                     A day runs from 4 AM to 4 AM, so late-night timeslots belong to the evening before.
+ * Updated 2026-11-24: On/off switches (non-dimmers) can be scheduled too, with power rules only.
  */
 import groovy.json.JsonOutput
 import groovy.transform.Field
@@ -94,6 +95,9 @@ def mainPage() {
             input "lights", "capability.switchLevel", title: "Dimmers this app can control",
                   description: "Every light selected here appears in the timeline, grouped by its Hubitat room.",
                   multiple: true, required: false, submitOnChange: true
+            input "switches", "capability.switch", title: "On/off switches this app can control",
+                  description: "Plain switches and plugs get Turn on / Turn off rules only. A dimmer picked here and above is treated as a dimmer.",
+                  multiple: true, required: false, submitOnChange: true
         }
         section("Advanced", hideable: true, hidden: true) {
             paragraph "The visual editor is served from the File Manager file <code>${HTML_FILE}</code>."
@@ -155,7 +159,7 @@ private String timelineUrl() {
 private String summaryText() {
     int nSched = schedules().size()
     Map today = scheduleForDow(serviceDow(new Date()))
-    String text = "${nSched} schedule${nSched == 1 ? '' : 's'}, ${(settings.lights ?: []).size()} lights selected. " +
+    String text = "${nSched} schedule${nSched == 1 ? '' : 's'}, ${(settings.lights ?: []).size()} dimmers and ${switchDevices().size()} switches selected. " +
                   "Today: <b>${today ? today.name : 'no schedule'}</b>."
     Map next = nextUpcoming()
     if (next) text += " Next: <b>${next.when.format('h:mm a', tz())}</b> ${next.slot.label ?: ''}" +
@@ -365,14 +369,16 @@ def executeSlot(data) {
 
 private void applySlot(Map slot, boolean levelsOnly) {
     Map byId = lightsById()
+    Map swById = switchDevices().collectEntries { [(it.id.toString()): it] }
     (slot.rules ?: [:]).each { String devId, Map rule ->
-        def light = byId[devId]
+        def light = byId[devId] ?: swById[devId]
         if (!light) {
-            logDebug "Light ${devId} is no longer selected. Skipping."
+            logDebug "Device ${devId} is no longer selected. Skipping."
             return
         }
         try {
-            applyRule(light, rule, levelsOnly)
+            if (byId[devId]) applyRule(light, rule, levelsOnly)
+            else applySwitchRule(light, rule, levelsOnly)
         } catch (Exception e) {
             log.warn "Error applying [${slot.label}] to ${light.displayName}: ${e.message}"
         }
@@ -438,6 +444,19 @@ private void applyRule(light, Map rule, boolean levelsOnly) {
                     light.setLevel(liveTarget)
                 }
             }
+    }
+}
+
+/** On/off-only devices: turn on or off; catch-up after a restart (levels only) leaves them alone. */
+private void applySwitchRule(dev, Map rule, boolean levelsOnly) {
+    if (levelsOnly) return
+    boolean isOn = dev.currentValue("switch") == "on"
+    if (rule.power == "on" && !isOn) {
+        log.info "Turning on ${dev.displayName}"
+        dev.on()
+    } else if (rule.power == "off" && isOn) {
+        log.info "Turning off ${dev.displayName}"
+        dev.off()
     }
 }
 
@@ -610,6 +629,10 @@ private List lightsPayload() {
             canPrestage: canPrestage(d),
             pending: toInt(pending[id])
         ]
+    } + switchDevices().collect { d ->
+        String id = d.id.toString()
+        [id: id, name: d.displayName, room: rooms[id] ?: "Unassigned", kind: "switch", sw: d.currentValue("switch"),
+         level: null, staged: null, canPrestage: false, pending: null]
     }
 }
 
@@ -623,7 +646,7 @@ private Map roomLookup() {
         logDebug "getRooms() unavailable: ${e.message}"
     }
     if (!m) {
-        settings.lights?.each { d ->
+        ((settings.lights ?: []) + switchDevices()).each { d ->
             try {
                 def rn = d.getRoomName()
                 if (rn) m[d.id.toString()] = rn
@@ -635,7 +658,8 @@ private Map roomLookup() {
 
 private Map sanitizeTimeline(def tl, int version) {
     if (!(tl instanceof Map) || !(tl.schedules instanceof List) || !tl.schedules) return [error: "Missing schedules"]
-    Set allowed = (settings.lights ?: []).collect { it.id.toString() } as Set
+    Set allowed = ((settings.lights ?: []) + switchDevices()).collect { it.id.toString() } as Set
+    Set switchOnly = switchDevices().collect { it.id.toString() } as Set
     Set seenSlots = [] as Set
     Set seenScheds = [] as Set
     List out = []
@@ -645,13 +669,13 @@ private Map sanitizeTimeline(def tl, int version) {
         if (!(id ==~ /[A-Za-z0-9_-]{1,40}/) || seenScheds.contains(id)) return
         seenScheds << id
         String name = (sc.name ?: "").toString().trim().take(40) ?: "Schedule"
-        out << [id: id, name: name, days: normDays(sc.days), slots: sanitizeSlots(sc.slots, allowed, seenSlots)]
+        out << [id: id, name: name, days: normDays(sc.days), slots: sanitizeSlots(sc.slots, allowed, switchOnly, seenSlots)]
     }
     if (!out) return [error: "Missing schedules"]
     return [version: version, schedules: out]
 }
 
-private List sanitizeSlots(def slots, Set allowed, Set seen) {
+private List sanitizeSlots(def slots, Set allowed, Set switchOnly, Set seen) {
     List out = []
     if (!(slots instanceof List)) return out
     slots.each { s ->
@@ -674,7 +698,7 @@ private List sanitizeSlots(def slots, Set allowed, Set seen) {
                 String dev = k.toString()
                 if (!allowed.contains(dev) || !(r instanceof Map)) return
                 String p = POWER_MODES.contains(r.power) ? r.power : ""
-                String l = LEVEL_MODES.contains(r.level) ? r.level : ""
+                String l = LEVEL_MODES.contains(r.level) && !switchOnly.contains(dev) ? r.level : ""
                 if (!p && !l) return
                 rules[dev] = [power: p, level: l, value: l ? clampLevel(toInt(r.value) ?: 50) : null]
             }
@@ -862,6 +886,12 @@ private Map findSlot(String id) {
         if (s) return s
     }
     return null
+}
+
+/** Selected on/off switches, minus any device that is also selected as a dimmer. */
+private List switchDevices() {
+    Set dimmers = (settings.lights ?: []).collect { it.id.toString() } as Set
+    return (settings.switches ?: []).findAll { !dimmers.contains(it.id.toString()) }
 }
 
 private Map lightsById() {

@@ -10,6 +10,7 @@ A single-app [Hubitat](https://hubitat.com/) approach to daily lighting routines
 - **Per-light rules** – in each timeslot, every light has two independent settings:
   - Power: **Turn on**, **Turn off**, or **Leave as is**
   - Level: **Set to**, **Raise to at least**, **Dim to at most**, or **No level change**
+- **On/off switches** – plain switches and plugs can be added alongside the dimmers. They appear in their rooms with an on/off chip and take **Turn on** / **Turn off** rules only; copying a level-only rule skips them, and catch-up after a restart leaves them alone.
 - **Pre-staging** – level rules always update the light's next "on" level when the device supports it (`setDefaultDimmerLevel`, `setDefaultLevel`, or `presetLevel`; plus P14 on Inovelli Red Series 800). Lights that can't pre-stage get a pending level that is applied the next time they turn on, so an off light is never switched on just to change its level.
 - **Editing tools** – click a cell to edit one light, see that light's whole day, and copy its rule to other lights; click a header to edit the whole timeslot; add a timeslot for one light with the row's **+**; create a timeslot **empty** or **from current light levels**; duplicate, delete, merge same-time timeslots, undo, and **Test now**.
 - **Catch-up after restarts** – after a hub reboot, level rules (never on/off) from any timeslots missed while it was down are replayed in order.
@@ -21,7 +22,7 @@ A single-app [Hubitat](https://hubitat.com/) approach to daily lighting routines
 2. On the same page, click **OAuth → Enable OAuth in App → Update**. The timeline page is served through the app's local API endpoint, which needs an access token.
 3. Go to **Settings → File Manager** and upload [`daily-lighting-timeline.html`](daily-lighting-timeline.html) (keep the file name).
 4. Go to **Apps → Add User App** and select **Daily Lighting Timeline**.
-5. Choose the dimmers the app may control, click **Done**, then reopen the app and click **Open the timeline**. Bookmark that page; its link includes the access token.
+5. Choose the dimmers (and any on/off switches) the app may control, click **Done**, then reopen the app and click **Open the timeline**. Bookmark that page; its link includes the access token.
 
 ### Upgrading from v1
 
@@ -51,7 +52,7 @@ All endpoints are local (`http://<hub>/apps/api/<app id>/…`) and need `access_
 ## Compatibility
 
 - Requires a Hubitat hub (platform 2.3.4 or later for File Manager access) with location and sunrise/sunset data configured.
-- Works with any device exposing the `SwitchLevel` capability.
+- Dimmers: any device exposing the `SwitchLevel` capability. On/off switches: any device exposing the `Switch` capability.
 
 ## License
 

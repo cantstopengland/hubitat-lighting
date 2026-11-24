@@ -80,6 +80,8 @@ body.ed-open #strip,body.ed-open .legend,body.ed-open #sched{margin-right:412px}
 .nrow .nm{flex:1;overflow:hidden;text-overflow:ellipsis}
 .chip{display:inline-block;min-width:40px;text-align:center;border-radius:4px;font-size:11px;line-height:18px;border:1px solid var(--bd);flex:none}
 .chip.off{color:var(--tx3)}
+.chip.son{background:#eaf3de;color:#3b6d11;border-color:#c0dd97}
+@media (prefers-color-scheme:dark){.chip.son{background:#27500a;color:#c0dd97;border-color:#3b6d11}}
 .pend{color:var(--warn);font-size:11px}
 .plus{flex:none;width:22px;height:20px;padding:0;line-height:1;font-size:14px;color:var(--tx2);opacity:.55}
 tr:hover .plus{opacity:1}
@@ -323,6 +325,14 @@ window.addEventListener('beforeunload', e => { if (dirty || saving) { e.preventD
 // ---------- model helpers ----------
 const slotById = id => C().slots.find(s => s.id === id);
 const lightById = id => LIGHTS.find(l => l.id === String(id));
+// On/off switches (not dimmers) only take power rules.
+const isSw = l => !!l && l.kind === 'switch';
+const newRule = id => isSw(lightById(id)) ? {power: 'on', level: '', value: null} : {power: '', level: 'set', value: defaultLevel(id)};
+// A rule adapted to a device: switches drop the level part; returns null if nothing is left.
+function fitRule(id, r) {
+  if (!isSw(lightById(id))) return {...r};
+  return r.power ? {power: r.power, level: '', value: null} : null;
+}
 const T = s => s.timing === 'fixed' ? hm(s.time) : (s.timing === 'sunrise' ? SUN.sr : SUN.ss) + (+s.offset || 0);
 // Minutes since the schedule day started (4 AM), so late-night timeslots sort last.
 const ord = m => wrap(m - DS);
@@ -352,13 +362,14 @@ function ruleText(r) {
   return [p, l].filter(Boolean).join(', ') || 'No change';
 }
 function liveText(l) {
+  if (isSw(l)) return (l.sw === 'on' ? 'On' : 'Off') + ' · on/off switch';
   let t = l.sw === 'on' ? 'On at ' + (l.level ?? '?') + '%' : 'Off';
   if (l.staged != null) t += ' · pre-staged ' + l.staged + '%';
   if (!l.canPrestage) t += " · can't pre-stage";
   if (l.pending != null) t += ' · ' + l.pending + '% waiting for next turn-on';
   return t;
 }
-const chip = l => l.sw === 'on'
+const chip = l => isSw(l) ? '<span class="chip' + (l.sw === 'on' ? ' son">on' : ' off">off') + '</span>' : l.sw === 'on'
   ? '<span class="chip" style="background:' + col(l.level || 1) + ';color:' + ink(l.level || 1) + '">' + (l.level ?? '?') + '%</span>'
   : '<span class="chip off">off</span>';
 // Timeslots sharing a minute that also share a light.
@@ -646,7 +657,7 @@ function renderSlotEditor(root, e) {
   rooms().forEach(([rn, ls]) => ls.forEach(l => {
     const r = s.rules[l.id]; if (!r) return;
     rows += '<tr data-l="' + l.id + '"><td><div class="rn">' + esc(rn) + '</div>' + esc(shortName(l)) + '</td>'
-      + '<td><select data-r="power" aria-label="Power">' + opt(PW, r.power) + '</select><br><select data-r="level" aria-label="Level rule">' + opt(LV, r.level) + '</select></td>'
+      + '<td><select data-r="power" aria-label="Power">' + opt(PW, r.power) + '</select>' + (isSw(l) ? '' : '<br><select data-r="level" aria-label="Level rule">' + opt(LV, r.level) + '</select>') + '</td>'
       + '<td>' + (r.level ? '<input type="number" min="1" max="100" data-r="value" value="' + r.value + '" aria-label="Level percent"> <span class="sw" style="background:' + col(r.value) + '"></span>' : '') + '</td>'
       + '<td><button data-rm="' + l.id + '" tabindex="-1" aria-label="Remove ' + esc(l.name) + '" title="Remove from this timeslot">×</button></td></tr>';
   }));
@@ -669,7 +680,8 @@ function renderSlotEditor(root, e) {
   root.querySelectorAll('tr[data-l]').forEach(tr => {
     const lid = tr.dataset.l, r = s.rules[lid];
     tr.querySelector('[data-r="power"]').addEventListener('change', ev => mut(() => { r.power = ev.target.value; normalize(s, lid); }));
-    tr.querySelector('[data-r="level"]').addEventListener('change', ev => mut(() => { r.level = ev.target.value; r.value = r.level ? (r.value || defaultLevel(lid)) : null; normalize(s, lid); }));
+    const lsel = tr.querySelector('[data-r="level"]');
+    if (lsel) lsel.addEventListener('change', ev => mut(() => { r.level = ev.target.value; r.value = r.level ? (r.value || defaultLevel(lid)) : null; normalize(s, lid); }));
     const v = tr.querySelector('[data-r="value"]');
     // Level numbers update in place (no redraw), so typing and tabbing down the column never races a re-render.
     if (v) v.addEventListener('change', () => {
@@ -692,7 +704,7 @@ function renderSlotEditor(root, e) {
   root.querySelector('[data-add]').addEventListener('change', ev => {
     const v = ev.target.value; if (!v) return;
     const ids = v.startsWith('room:') ? (rooms().find(r => r[0] === v.slice(5)) || [null, []])[1].map(l => l.id) : [v];
-    mut(() => ids.forEach(id => { if (!s.rules[id]) s.rules[id] = {power: '', level: 'set', value: defaultLevel(id)}; }));
+    mut(() => ids.forEach(id => { if (!s.rules[id]) s.rules[id] = newRule(id); }));
   });
   root.querySelectorAll('[data-merge]').forEach(b => b.addEventListener('click', () => mut(() => {
     const o = slotById(b.dataset.merge);
@@ -730,7 +742,7 @@ function renderCellEditor(root, e) {
   const s = slotById(e.sid), l = lightById(e.lid);
   if (!s || !l) return closeEditor();
   const r = s.rules[l.id];
-  const draft = e.draft || (r ? {...r} : {power: '', level: 'set', value: defaultLevel(l.id)});
+  const draft = e.draft || (r ? {...r} : newRule(l.id));
   e.draft = draft;
   const day = sorted().map(o => {
     const rr = o.rules[l.id]; if (!rr) return '';
@@ -744,7 +756,7 @@ function renderCellEditor(root, e) {
   root.innerHTML = head(esc(l.name), esc(l.room) + ' · ' + esc(fmt(T(s)) + ' ' + (s.label || '')))
     + '<div class="row note">Right now: ' + chip(l) + ' ' + esc(liveText(l)) + '</div>'
     + (r ? '' : '<div class="warnbox">This light isn\'t in this timeslot yet.</div>')
-    + '<div class="row"><label class="f">Power<select data-d="power">' + opt(PW, draft.power) + '</select></label><label class="f">Level<select data-d="level">' + opt(LV, draft.level) + '</select></label></div>'
+    + '<div class="row"><label class="f">Power<select data-d="power">' + opt(PW, draft.power) + '</select></label>' + (isSw(l) ? '<span class="note">On/off switch: no level</span>' : '<label class="f">Level<select data-d="level">' + opt(LV, draft.level) + '</select></label>') + '</div>'
     + (draft.level ? '<div class="row"><input type="range" min="1" max="100" step="1" data-d="range" value="' + draft.value + '" style="flex:1"><input type="number" min="1" max="100" data-d="value" value="' + draft.value + '" aria-label="Level percent"><span class="sw" data-sw style="background:' + col(draft.value) + '"></span></div>' : '')
     + (!draft.power && !draft.level ? '<p class="note">With no power or level change this rule does nothing.</p>' : '')
     + '<div class="row">' + (r ? '<button class="danger" data-x="rm">Remove from timeslot</button>' : '<button class="primary" data-x="add">Add to this timeslot</button>') + '<button data-x="slot">Edit whole timeslot</button></div>'
@@ -752,7 +764,8 @@ function renderCellEditor(root, e) {
     + '<h3>Copy this rule to other lights at ' + fmtS(T(s)) + '</h3><div class="cl">' + cl + '</div><div class="row"><button data-x="copy">Copy to selected</button></div>';
   const commit = (key, keep) => { if (s.rules[l.id]) edit(() => { s.rules[l.id] = {...draft}; normalize(s, l.id); }, {key, keepEditor: keep}); };
   root.querySelector('[data-d="power"]').addEventListener('change', ev => { draft.power = ev.target.value; commit(); redrawEditor(); });
-  root.querySelector('[data-d="level"]').addEventListener('change', ev => { draft.level = ev.target.value; if (draft.level && !draft.value) draft.value = defaultLevel(l.id); if (!draft.level) draft.value = null; commit(); redrawEditor(); });
+  const dl = root.querySelector('[data-d="level"]');
+  if (dl) dl.addEventListener('change', ev => { draft.level = ev.target.value; if (draft.level && !draft.value) draft.value = defaultLevel(l.id); if (!draft.level) draft.value = null; commit(); redrawEditor(); });
   const rg = root.querySelector('[data-d="range"]'), nb = root.querySelector('[data-d="value"]'), sw = root.querySelector('[data-sw]');
   const setV = (v, from) => { draft.value = clampL(v); if (from !== rg && rg) rg.value = draft.value; if (from !== nb && nb) nb.value = draft.value; if (sw) sw.style.background = col(draft.value); };
   if (rg) rg.addEventListener('input', () => { setV(rg.value, rg); commit('range:' + s.id + ':' + l.id, true); });
@@ -767,8 +780,9 @@ function renderCellEditor(root, e) {
     const ids = [...root.querySelectorAll('input[data-in]:checked')].map(x => x.value);
     if (!ids.length) return toast('Select lights to copy to');
     if (!draft.power && !draft.level) return toast('This rule does nothing yet');
-    edit(() => { s.rules[l.id] = {...draft}; ids.forEach(id => s.rules[id] = {...draft}); });
-    toast('Copied to ' + ids.length + ' light' + (ids.length > 1 ? 's' : ''));
+    let n = 0, skipped = 0;
+    edit(() => { s.rules[l.id] = {...draft}; ids.forEach(id => { const f = fitRule(id, draft); if (f) { s.rules[id] = f; n++; } else skipped++; }); });
+    toast('Copied to ' + n + ' light' + (n === 1 ? '' : 's') + (skipped ? '; skipped ' + skipped + ' on/off switch' + (skipped > 1 ? 'es' : '') + ' (no power change to copy)' : ''));
   });
   root.querySelectorAll('[data-go]').forEach(li => li.addEventListener('click', () => openEditor({type: 'cell', sid: li.dataset.go, lid: l.id})));
   root.querySelector('[data-x="close"]').addEventListener('click', closeEditor);
@@ -785,7 +799,7 @@ function renderNewEditor(root, e) {
   let title = 'New empty timeslot', extra = '';
   if (e.kind === 'light') {
     title = 'New timeslot for ' + esc(l.name);
-    extra = '<div class="row"><label class="f">Power<select data-n="power">' + opt(PW, e.rule.power) + '</select></label><label class="f">Level<select data-n="level">' + opt(LV, e.rule.level) + '</select></label>'
+    extra = '<div class="row"><label class="f">Power<select data-n="power">' + opt(PW, e.rule.power) + '</select></label>' + (isSw(l) ? '' : '<label class="f">Level<select data-n="level">' + opt(LV, e.rule.level) + '</select></label>')
       + (e.rule.level ? '<label class="f">Percent<input type="number" min="1" max="100" data-n="value" value="' + e.rule.value + '"></label>' : '') + '</div>';
   } else if (e.kind === 'current') {
     title = 'New timeslot from current levels';
@@ -825,7 +839,9 @@ function renderNewEditor(root, e) {
     } else if (e.kind === 'current') {
       [...root.querySelectorAll('input[data-in]:checked')].forEach(x => {
         const lt = lightById(x.value);
-        if (lt.sw === 'on') {
+        if (lt.sw === 'on' && isSw(lt)) {
+          if (e.cur.onPower) s.rules[lt.id] = {power: 'on', level: '', value: null};
+        } else if (lt.sw === 'on') {
           if (e.cur.onPower || e.cur.onLevel) s.rules[lt.id] = {power: e.cur.onPower, level: e.cur.onLevel, value: e.cur.onLevel ? clampL(lt.level || 1) : null};
         } else if (e.cur.offPower) s.rules[lt.id] = {power: 'off', level: '', value: null};
       });
@@ -838,7 +854,7 @@ function renderNewEditor(root, e) {
 function newSlot(kind, lid) {
   const n = nowMin(), m = kind === 'current' ? Math.round(n / 5) * 5 : Math.ceil((n + 1) / 60) * 60;
   const s = {id: uid(), label: kind === 'current' ? 'Snapshot' : '', timing: 'fixed', time: toHM(wrap(m)), offset: 0, rules: {}};
-  openEditor({type: 'new', kind, lid, slot: s, rule: {power: '', level: 'set', value: lid ? defaultLevel(lid) : 50}, cur: {onPower: 'on', onLevel: 'set', offPower: 'off'}});
+  openEditor({type: 'new', kind, lid, slot: s, rule: lid ? newRule(lid) : {power: '', level: 'set', value: 50}, cur: {onPower: 'on', onLevel: 'set', offPower: 'off'}});
 }
 
 // ---------- interactions ----------
