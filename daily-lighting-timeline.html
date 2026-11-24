@@ -283,7 +283,7 @@ function edit(fn, opts = {}) {
   pushUndo(opts.key);
   fn();
   render();
-  if (!opts.keepEditor) renderEditor();
+  if (!opts.keepEditor) redrawEditor();
   scheduleSave();
 }
 function scheduleSave(delay = 700) {
@@ -592,6 +592,42 @@ function bindTiming(root, s, mutate) {
   root.querySelectorAll('[data-nudge]').forEach(b => b.addEventListener('click', () => mutate(() => setT(s, T(s) + (+b.dataset.nudge)), 'nudge:' + s.id)));
 }
 
+/**
+ * Redraws the editor after an edit without losing keyboard focus. A change
+ * event fires while the browser is already moving focus (e.g. on Tab), so the
+ * redraw waits until focus has landed, then focuses the matching control in
+ * the new markup and keeps the scroll position.
+ */
+let redrawPending = false;
+function redrawEditor() {
+  if (redrawPending) return;
+  redrawPending = true;
+  setTimeout(() => {
+    redrawPending = false;
+    const root = $('ed'), k = focusKey(document.activeElement), top = root.scrollTop;
+    renderEditor();
+    root.scrollTop = top;
+    refocus(k);
+  }, 0);
+}
+// Identifies a control in the editor by its data-* attributes (and its light row), so it can be found again after a redraw.
+function focusKey(el) {
+  const root = $('ed');
+  if (!el || el === root || !root.contains(el)) return null;
+  const attrs = [...el.attributes].filter(a => a.name.startsWith('data-')).map(a => '[' + a.name + '="' + CSS.escape(a.value) + '"]').join('');
+  const val = el.type === 'checkbox' || el.type === 'radio' ? '[value="' + CSS.escape(el.value) + '"]' : '';
+  if (!attrs && !val) return null;
+  const row = el.closest('tr[data-l]');
+  return {sel: el.tagName.toLowerCase() + attrs + val, row: row ? row.dataset.l : null};
+}
+function refocus(k) {
+  if (!k) return;
+  const root = $('ed');
+  const scope = (k.row && root.querySelector('tr[data-l="' + CSS.escape(k.row) + '"]')) || root;
+  const el = scope.querySelector(k.sel);
+  if (el && el !== document.activeElement) el.focus({preventScroll: true});
+}
+
 function renderEditor() {
   const e = ui.ed, root = $('ed');
   if (!e) return;
@@ -612,7 +648,7 @@ function renderSlotEditor(root, e) {
     rows += '<tr data-l="' + l.id + '"><td><div class="rn">' + esc(rn) + '</div>' + esc(shortName(l)) + '</td>'
       + '<td><select data-r="power" aria-label="Power">' + opt(PW, r.power) + '</select><br><select data-r="level" aria-label="Level rule">' + opt(LV, r.level) + '</select></td>'
       + '<td>' + (r.level ? '<input type="number" min="1" max="100" data-r="value" value="' + r.value + '" aria-label="Level percent"> <span class="sw" style="background:' + col(r.value) + '"></span>' : '') + '</td>'
-      + '<td><button data-rm="' + l.id + '" aria-label="Remove ' + esc(l.name) + '">×</button></td></tr>';
+      + '<td><button data-rm="' + l.id + '" tabindex="-1" aria-label="Remove ' + esc(l.name) + '" title="Remove from this timeslot">×</button></td></tr>';
   }));
   let add = '<option value="">Add lights…</option>';
   rooms().forEach(([rn, ls]) => {
@@ -635,9 +671,24 @@ function renderSlotEditor(root, e) {
     tr.querySelector('[data-r="power"]').addEventListener('change', ev => mut(() => { r.power = ev.target.value; normalize(s, lid); }));
     tr.querySelector('[data-r="level"]').addEventListener('change', ev => mut(() => { r.level = ev.target.value; r.value = r.level ? (r.value || defaultLevel(lid)) : null; normalize(s, lid); }));
     const v = tr.querySelector('[data-r="value"]');
-    if (v) v.addEventListener('change', () => mut(() => r.value = clampL(v.value)));
+    // Level numbers update in place (no redraw), so typing and tabbing down the column never races a re-render.
+    if (v) v.addEventListener('change', () => {
+      edit(() => r.value = clampL(v.value), {keepEditor: true});
+      v.value = r.value;
+      const sw = tr.querySelector('.sw'); if (sw) sw.style.background = col(r.value);
+    });
   });
   root.querySelectorAll('[data-rm]').forEach(b => b.addEventListener('click', () => mut(() => delete s.rules[b.dataset.rm])));
+  // Tab moves down a column: every Power first, then every Level rule, then every level number.
+  const order = ['power', 'level', 'value'].flatMap(k => [...root.querySelectorAll('.rl [data-r="' + k + '"]')]);
+  const rl = root.querySelector('.rl');
+  if (rl) rl.addEventListener('keydown', ev => {
+    if (ev.key !== 'Tab' || ev.altKey || ev.ctrlKey || ev.metaKey) return;
+    const j = order.indexOf(ev.target) + (ev.shiftKey ? -1 : 1);
+    if (order.indexOf(ev.target) < 0 || j < 0 || j >= order.length) return;
+    ev.preventDefault();
+    order[j].focus();
+  });
   root.querySelector('[data-add]').addEventListener('change', ev => {
     const v = ev.target.value; if (!v) return;
     const ids = v.startsWith('room:') ? (rooms().find(r => r[0] === v.slice(5)) || [null, []])[1].map(l => l.id) : [v];
@@ -700,8 +751,8 @@ function renderCellEditor(root, e) {
     + '<h3>This light\'s day</h3>' + (day ? '<ul class="day">' + day + '</ul>' : '<p class="note">Not in any timeslot yet.</p>')
     + '<h3>Copy this rule to other lights at ' + fmtS(T(s)) + '</h3><div class="cl">' + cl + '</div><div class="row"><button data-x="copy">Copy to selected</button></div>';
   const commit = (key, keep) => { if (s.rules[l.id]) edit(() => { s.rules[l.id] = {...draft}; normalize(s, l.id); }, {key, keepEditor: keep}); };
-  root.querySelector('[data-d="power"]').addEventListener('change', ev => { draft.power = ev.target.value; commit(); renderEditor(); });
-  root.querySelector('[data-d="level"]').addEventListener('change', ev => { draft.level = ev.target.value; if (draft.level && !draft.value) draft.value = defaultLevel(l.id); if (!draft.level) draft.value = null; commit(); renderEditor(); });
+  root.querySelector('[data-d="power"]').addEventListener('change', ev => { draft.power = ev.target.value; commit(); redrawEditor(); });
+  root.querySelector('[data-d="level"]').addEventListener('change', ev => { draft.level = ev.target.value; if (draft.level && !draft.value) draft.value = defaultLevel(l.id); if (!draft.level) draft.value = null; commit(); redrawEditor(); });
   const rg = root.querySelector('[data-d="range"]'), nb = root.querySelector('[data-d="value"]'), sw = root.querySelector('[data-sw]');
   const setV = (v, from) => { draft.value = clampL(v); if (from !== rg && rg) rg.value = draft.value; if (from !== nb && nb) nb.value = draft.value; if (sw) sw.style.background = col(draft.value); };
   if (rg) rg.addEventListener('input', () => { setV(rg.value, rg); commit('range:' + s.id + ':' + l.id, true); });
@@ -751,7 +802,7 @@ function renderNewEditor(root, e) {
     + '<div class="row"><label class="f" style="flex:1">Label<input type="text" data-n="label" maxlength="60" value="' + esc(s.label) + '"></label></div>'
     + timingHTML(s) + extra
     + '<div class="row"><button class="primary" data-x="create">Create</button><button data-x="close2">Cancel</button></div>';
-  const redraw = fn => { fn(); renderNewEditor(root, e); };
+  const redraw = fn => { fn(); redrawEditor(); };
   bindTiming(root, s, redraw);
   root.querySelector('[data-n="label"]').addEventListener('input', ev => s.label = ev.target.value.slice(0, 60));
   root.querySelectorAll('[data-n="power"],[data-n="level"],[data-n="value"]').forEach(el => el.addEventListener('change', () => redraw(() => {
@@ -850,6 +901,15 @@ $('sched').addEventListener('click', ev => {
     openEditor({type: 'newsched', name: '', from: C().id, days: [1, 2, 3, 4, 5, 6, 7].filter(d => !used.has(d))});
   }
 });
+// Focusing a number field selects it, so typing replaces the value instead of adding to it.
+let justSelected = null;
+$('ed').addEventListener('focusin', ev => {
+  const t = ev.target;
+  if (t.tagName === 'INPUT' && t.type === 'number') { t.select(); justSelected = t; }
+});
+// A click that focuses the field would otherwise drop the selection on mouseup.
+$('ed').addEventListener('mouseup', ev => { if (ev.target === justSelected) { ev.preventDefault(); justSelected = null; } });
+$('ed').addEventListener('keydown', () => { justSelected = null; });
 $('undoBtn').addEventListener('click', undo);
 $('reloadBtn').addEventListener('click', async () => { if ((dirty || saving) && !conflict) await flush(); load(); });
 document.addEventListener('keydown', ev => {
