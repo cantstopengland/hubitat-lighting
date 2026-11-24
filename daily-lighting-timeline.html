@@ -73,6 +73,7 @@ body.ed-open #strip,body.ed-open .legend,body.ed-open #sched{margin-right:412px}
 @media (prefers-color-scheme:dark){#m td.pon::before{background:#97c459}#m td.poff::before{background:#b4b2a9}}
 .mk{display:inline-block;width:14px;height:12px;vertical-align:-2px;margin-right:3px;border:1px solid var(--bd)}
 #m td.e:hover{background:var(--soft)}
+#m td.hc{font-weight:600;text-shadow:0 0 3px rgba(0,0,0,.35)}
 #m td.hz{background:repeating-linear-gradient(45deg,var(--soft),var(--soft) 4px,transparent 4px,transparent 8px);color:var(--tx2)}
 #m tr.room td{background:var(--soft);font-weight:600;cursor:pointer;height:26px}
 #m tr.room td.n{background:var(--soft)}
@@ -182,6 +183,13 @@ function col(l, alpha) {
   return alpha ? 'rgba(' + c.join(',') + ',' + alpha + ')' : 'rgb(' + c.join(',') + ')';
 }
 const ink = l => l >= 40 ? '#412402' : '#faeeda';
+// Off (or expected off) with a known next-on level: the level color under dark stripes.
+// withInk also sets a readable text color for cells that show a rule.
+function offBg(lv, alpha, withInk) {
+  if (!lv) return '';
+  return ' style="background:repeating-linear-gradient(135deg,rgba(0,0,0,.5) 0 3px,transparent 3px 9px),' + col(lv, alpha)
+    + (withInk ? ';color:' + ink(lv) : '') + '"';
+}
 
 // ---------- state ----------
 let TL = null;              // {version, schedules:[{id,name,days:[1-7],slots:[{id,label,timing,time,offset,rules:{devId:{power,level,value}}}]}]}
@@ -470,8 +478,8 @@ function rowCells(l, ss, sel) {
     if (r && r.level) lv = r.value;
     if (r && r.power) st = r.power;
     if (!r) {
-      if (st === 'on') h += '<td class="c e' + selc + '"' + d + ' title="Expected on' + (lv ? ' at about ' + lv + '%' : '') + ' (from the rules)" style="background:' + (lv ? col(lv, .38) : 'var(--acc-bg)') + '"></td>';
-      else if (st === 'off') h += '<td class="c e hz' + selc + '"' + d + ' title="Expected off (from the rules)"></td>';
+      if (st === 'on') h += '<td class="c e' + selc + '"' + d + ' title="Expected on' + (lv ? ' at about ' + lv + '%' : '') + ' (from the rules)" style="background:' + (lv ? col(lv, .6) : 'var(--acc-bg)') + '"></td>';
+      else if (st === 'off') h += '<td class="c e' + (lv ? '' : ' hz') + selc + '"' + d + ' title="Expected off (from the rules)' + (lv ? ', next on at about ' + lv + '%' : '') + '"' + offBg(lv, .35) + '></td>';
       else h += '<td class="c e' + selc + '"' + d + '></td>';
       return;
     }
@@ -479,8 +487,10 @@ function rowCells(l, ss, sel) {
     let title = ruleText(r);
     if (r.power === 'off' || !r.level || (st === 'off' && !r.power)) {
       if (st === 'off' && !r.power) title += ' (expected off, so this only pre-stages)';
-      const bg = r.power === 'on' && lv ? ' style="background:' + col(lv, .38) + '"' : '';
-      h += '<td class="c' + (r.power === 'on' ? '' : ' hz') + pc + selc + '"' + d + ' title="' + esc(title) + '"' + bg + '>' + ruleHTML(r) + '</td>';
+      let bg = '', cls = r.power === 'on' ? '' : ' hz';
+      if (r.power === 'on' && lv) bg = ' style="background:' + col(lv, .6) + '"';
+      else if (r.power !== 'on' && lv && (r.level || st === 'off')) { bg = offBg(r.level ? r.value : lv, 1, true); cls = ' hc'; }
+      h += '<td class="c' + cls + pc + selc + '"' + d + ' title="' + esc(title) + '"' + bg + '>' + ruleHTML(r) + '</td>';
     } else {
       h += '<td class="c' + pc + selc + '"' + d + ' title="' + esc(title) + '" style="background:' + col(r.value) + ';color:' + ink(r.value) + '">' + ruleHTML(r) + '</td>';
     }
@@ -955,7 +965,7 @@ function toast(msg) { const t = $('toast'); t.textContent = msg; t.className = '
 // ---------- init ----------
 $('bar').style.background = 'linear-gradient(90deg,' + [1, 10, 25, 45, 70, 100].map(col).join(',') + ')';
 $('legendIcons').innerHTML = '<span class="mk" style="border-left:4px solid #639922"></span>turns on &nbsp; <span class="mk" style="border-left:4px solid #8a8882"></span>turns off &nbsp; '
-  + '<span class="mk" style="background:' + col(30, .38) + '"></span>expected on &nbsp; <span class="mk" style="background:repeating-linear-gradient(45deg,var(--soft),var(--soft) 3px,transparent 3px,transparent 6px)"></span>expected off &nbsp; '
+  + '<span class="mk" style="background:' + col(60, .6) + '"></span>expected on &nbsp; <span class="mk" style="background:repeating-linear-gradient(135deg,rgba(0,0,0,.5) 0 2px,transparent 2px 5px),' + col(60, .6) + '"></span>expected off (stripes over its next-on level) &nbsp; '
   + '50 set to &nbsp; ≥ raise to at least &nbsp; ≤ dim to at most &nbsp; <span style="color:var(--acc)">now</span> = rules in effect';
 if (MOCK) $('exportLink').style.display = 'none';
 else $('exportLink').href = 'timeline?access_token=' + encodeURIComponent(TOKEN);
